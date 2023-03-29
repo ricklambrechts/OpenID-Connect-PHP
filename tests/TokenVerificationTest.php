@@ -1,6 +1,5 @@
 <?php
 
-
 use Jumbojett\OpenIDConnectClient;
 use PHPUnit\Framework\MockObject\MockObject;
 use Yoast\PHPUnitPolyfills\TestCases\TestCase;
