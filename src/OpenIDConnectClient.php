@@ -1767,14 +1767,14 @@ class OpenIDConnectClient
     }
 
     /**
-     * @return object|string|null
+     * @return object
      */
     public function getIdTokenHeader() {
         return $this->decodeJWT($this->idToken);
     }
 
     /**
-     * @return object|string|null
+     * @return object
      */
     public function getIdTokenPayload() {
         return $this->decodeJWT($this->idToken, 1);

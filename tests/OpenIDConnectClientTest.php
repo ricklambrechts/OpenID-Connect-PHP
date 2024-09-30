@@ -163,10 +163,10 @@ class OpenIDConnectClientTest extends TestCase
     public function testAuthenticateWithCodeMockedVerify()
     {
         $mockCode = 'some-code';
+        $mockState = 'some-code';
 
         $_REQUEST['code'] = $mockCode;
-        $_REQUEST['state'] = "random-generated-state";
-        $_SESSION['openid_connect_state'] = "random-generated-state";
+        $_REQUEST['state'] = $mockState;
 
         $mockClaims = (object)['email' => 'test@example.com'];
         $mockIdToken = implode('.', [base64_encode('{}'), base64_encode(json_encode($mockClaims)), '']);
@@ -180,8 +180,10 @@ class OpenIDConnectClientTest extends TestCase
         ];
 
         $client = $this->getMockBuilder(OpenIDConnectClient::class)
-            ->setMethods(['requestTokens', 'verifySignatures', 'verifyJWTClaims'])
+            ->setMethods(['requestTokens', 'verifySignatures', 'verifyJWTClaims', 'getState'])
             ->getMock();
+        $client->method('getState')
+            ->willReturn($mockState);
         $client->method('requestTokens')
             ->with($mockCode)
             ->willReturn($mockTokenResponse);
