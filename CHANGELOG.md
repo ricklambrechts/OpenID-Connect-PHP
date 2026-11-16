@@ -10,10 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support to change the `leeway` time for JWT verification using `setLeeway` #483
 
 ### Changed
+- **Breaking change:** JWT verification now accepts only `RS256` by default. Configure
+  other signing algorithms using the optional fifth constructor argument or
+  `setExpectedAlgorithms()`.
+- **Breaking change:** Embedded `jwk` headers are disabled by default, including for
+  subclasses overriding `verifyJWKHeader()`. Enable them explicitly with
+  `setAllowJWKHeader(true)` only when the application intends to trust embedded keys.
 - Stop adding ?schema=openid to userinfo endpoint URL. #449
 - Drop support for PHP 7.1 #502
 
 ### Fixed
+- Enforce declared RSA JWK `alg`, `use`, and `key_ops` restrictions during JWT verification.
 - Check existence of subject when verifying JWT #474
 - exp verification when verifying Logout Token claims #482
 - http_build_query expects (non nullable) string as 2nd argument

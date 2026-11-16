@@ -22,6 +22,26 @@ composer require jumbojett/openid-connect-php
 require __DIR__ . '/vendor/autoload.php';
 ```
 
+## JWT Signing Algorithms ##
+
+Only `RS256` is accepted by default. If your provider signs tokens with another
+algorithm, you must configure the expected algorithms before authentication.
+Use a non-empty list in the optional fifth constructor argument or the setter:
+
+```php
+$oidc->setExpectedAlgorithms(['RS256', 'PS256']);
+```
+
+HMAC algorithms require explicit opt-in and a non-empty client secret. Secret
+length and strength are the responsibility of the provider and application.
+
+Embedded `jwk` headers are disabled by default. Enable them with
+`$oidc->setAllowJWKHeader(true)`. Algorithm and key restrictions still apply.
+
+**Security warning:** embedded keys come from the token and do not establish the
+provider's identity. Keep this disabled for normal OpenID Connect authentication
+and use the provider's JWKS.
+
 ## Example 1: Basic Client ##
 
 ```php

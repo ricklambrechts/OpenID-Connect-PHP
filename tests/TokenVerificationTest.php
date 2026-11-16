@@ -20,6 +20,7 @@ class TokenVerificationTest extends TestCase
         $client = $this->getMockBuilder(OpenIDConnectClient::class)->setMethods(['fetchUrl'])->getMock();
         $client->method('fetchUrl')->willReturn(file_get_contents(__DIR__ . "/data/jwks-$alg.json"));
         $client->setProviderURL('https://jwt.io/');
+        $client->setExpectedAlgorithms([strtoupper($alg)]);
         $client->providerConfigParam(['jwks_uri' => 'https://jwt.io/.well-known/jwks.json']);
         $verified = $client->verifyJWTSignature($jwt);
         self::assertTrue($verified);

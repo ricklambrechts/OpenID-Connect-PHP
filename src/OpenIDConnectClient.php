@@ -76,6 +76,10 @@ class OpenIDConnectClientException extends Exception
 class OpenIDConnectClient
 {
 
+    private const SUPPORTED_SIGNING_ALGORITHMS = [
+        'RS256', 'RS384', 'RS512', 'PS256', 'PS512', 'HS256', 'HS384', 'HS512'
+    ];
+
     /**
      * @var string arbitrary id value
      */
@@ -90,6 +94,11 @@ class OpenIDConnectClient
      * @var string arbitrary secret value
      */
     private $clientSecret;
+
+    /**
+     * @var string[] signing algorithms explicitly allowed for this client
+     */
+    private $expectedAlgorithms = ['RS256'];
 
     /**
      * @var array holds the provider configuration
@@ -213,6 +222,11 @@ class OpenIDConnectClient
     private $allowImplicitFlow = false;
 
     /**
+     * @var bool Allow embedded JWK headers (disabled by default)
+     */
+    private $allowJwkHeader = false;
+
+    /**
      * @var string
      */
     private $redirectURL;
@@ -258,8 +272,17 @@ class OpenIDConnectClient
      * @param string|null $client_id optional
      * @param string|null $client_secret optional
      * @param string|null $issuer
+     * @param string[] $expected_algorithms accepted JWT signing algorithms
+     * @throws OpenIDConnectClientException
      */
-    public function __construct(?string $provider_url = null, ?string $client_id = null, ?string $client_secret = null, ?string $issuer = null) {
+    public function __construct(
+        ?string $provider_url = null,
+        ?string $client_id = null,
+        ?string $client_secret = null,
+        ?string $issuer = null,
+        array $expected_algorithms = ['RS256']
+    ) {
+        $this->setExpectedAlgorithms($expected_algorithms);
         $this->setProviderURL($provider_url);
         if ($issuer === null) {
             $this->setIssuer($provider_url);
@@ -283,6 +306,39 @@ class OpenIDConnectClient
      */
     public function setIssuer($issuer) {
         $this->providerConfig['issuer'] = $issuer;
+    }
+
+    /**
+     * Set the signing algorithms accepted for every JWT verified by this client.
+     *
+     * @param string[] $expectedAlgorithms
+     * @throws OpenIDConnectClientException
+     */
+    public function setExpectedAlgorithms(array $expectedAlgorithms) {
+        if (!$expectedAlgorithms) {
+            throw new OpenIDConnectClientException('Expected signing algorithms must not be empty');
+        }
+        foreach ($expectedAlgorithms as $algorithm) {
+            if (!is_string($algorithm) || !in_array($algorithm, self::SUPPORTED_SIGNING_ALGORITHMS, true)) {
+                throw new OpenIDConnectClientException('Unsupported expected signing algorithm');
+            }
+        }
+        $this->expectedAlgorithms = array_values(array_unique($expectedAlgorithms));
+    }
+
+    /**
+     * Allow embedded JWK headers (disabled by default).
+     *
+     * Security warning: enabling this option trusts a public key supplied by the
+     * token itself. An attacker can provide their own key and sign arbitrary
+     * tokens, so a valid signature does not establish the provider's identity.
+     * Keep disabled for normal OpenID Connect authentication; use the provider's
+     * JWKS unless the application independently establishes trust in embedded keys.
+     *
+     * @param bool $allowJwkHeader
+     */
+    public function setAllowJWKHeader(bool $allowJwkHeader) {
+        $this->allowJwkHeader = $allowJwkHeader;
     }
 
     /**
@@ -1038,27 +1094,34 @@ class OpenIDConnectClient
     }
 
     /**
+     * Fetch provider JWKS and append additional keys in lookup order.
+     *
      * @throws OpenIDConnectClientException
      */
-    private function getKeyForHeader(array $keys, stdClass $header) {
-        foreach ($keys as $key) {
-            if ($key->kty === 'RSA') {
-                if (!isset($header->kid) || $key->kid === $header->kid) {
-                    return $key;
-                }
-            } else if (isset($key->alg) && $key->alg === $header->alg && $key->kid === $header->kid) {
-                return $key;
-            }
+    private function getJwksKeys(): array
+    {
+        $jwksUri = $this->getProviderConfigValue('jwks_uri');
+        if (!$jwksUri) {
+            throw new OpenIDConnectClientException ('Unable to verify signature due to no jwks_uri being defined');
         }
-        if ($this->additionalJwks) {
-            foreach ($this->additionalJwks as $key) {
-                if ($key->kty === 'RSA') {
-                    if (!isset($header->kid) || $key->kid === $header->kid) {
-                        return $key;
-                    }
-                } else if (isset($key->alg) && $key->alg === $header->alg && $key->kid === $header->kid) {
-                    return $key;
-                }
+
+        $jwks = json_decode($this->fetchURL($jwksUri), false);
+        if ($jwks === null) {
+            throw new OpenIDConnectClientException('Error decoding JSON from jwks_uri');
+        }
+        if (!is_object($jwks) || !isset($jwks->keys) || !is_array($jwks->keys)) {
+            throw new OpenIDConnectClientException('Malformed JWKS: keys must be an array');
+        }
+        return array_merge($jwks->keys, $this->additionalJwks);
+    }
+
+    /**
+     * @throws OpenIDConnectClientException
+     */
+    private function getKeyForHeader(stdClass $header) {
+        foreach ($this->getJwksKeys() as $key) {
+            if ($this->isJwkEligibleForHeader($key, $header)) {
+                return $key;
             }
         }
         if (isset($header->kid)) {
@@ -1066,6 +1129,33 @@ class OpenIDConnectClient
         }
 
         throw new OpenIDConnectClientException('Unable to find a key for RSA');
+    }
+
+    private function isJwkEligibleForHeader($key, stdClass $header): bool
+    {
+        if (!is_object($key) || !isset($key->kty) || $key->kty !== 'RSA') {
+            return false;
+        }
+        if (isset($header->kid) && (!isset($key->kid) || $key->kid !== $header->kid)) {
+            return false;
+        }
+        if (property_exists($key, 'alg') && $key->alg !== $header->alg) {
+            return false;
+        }
+        if (property_exists($key, 'use') && $key->use !== 'sig') {
+            return false;
+        }
+        if (property_exists($key, 'key_ops')) {
+            if (!is_array($key->key_ops) || !in_array('verify', $key->key_ops, true)) {
+                return false;
+            }
+            foreach ($key->key_ops as $operation) {
+                if (!is_string($operation)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /**
@@ -1117,8 +1207,18 @@ class OpenIDConnectClient
         if (!is_object($header)) {
             throw new OpenIDConnectClientException('Error decoding JSON from token header');
         }
-        if (!isset($header->alg)) {
-            throw new OpenIDConnectClientException('Error missing signature type in token header');
+        if (!isset($header->alg) || !is_string($header->alg)
+            || !in_array($header->alg, $this->expectedAlgorithms, true)) {
+            throw new OpenIDConnectClientException('Invalid or disallowed signature type in token header');
+        }
+        if (property_exists($header, 'kid') && !is_string($header->kid)) {
+            throw new OpenIDConnectClientException('Invalid key ID in token header');
+        }
+        if (property_exists($header, 'jwk')) {
+            if (!$this->allowJwkHeader) {
+                throw new OpenIDConnectClientException('JWK header is not allowed');
+            }
+            $this->verifyJWKHeader($header->jwk);
         }
 
         $payload = implode('.', $parts);
@@ -1130,20 +1230,13 @@ class OpenIDConnectClient
             case 'RS512':
                 $hashType = 'sha' . substr($header->alg, 2);
                 $signatureType = $header->alg === 'PS256' || $header->alg === 'PS512' ? 'PSS' : '';
-                if (isset($header->jwk)) {
+                if (property_exists($header, 'jwk')) {
                     $jwk = $header->jwk;
-                    $this->verifyJWKHeader($jwk);
+                    if (!$this->isJwkEligibleForHeader($jwk, $header)) {
+                        throw new OpenIDConnectClientException('JWK header does not permit this signature');
+                    }
                 } else {
-                    $jwksUri = $this->getProviderConfigValue('jwks_uri');
-                    if (!$jwksUri) {
-                        throw new OpenIDConnectClientException ('Unable to verify signature due to no jwks_uri being defined');
-                    }
-
-                    $jwks = json_decode($this->fetchURL($jwksUri), false);
-                    if ($jwks === NULL) {
-                        throw new OpenIDConnectClientException('Error decoding JSON from jwks_uri');
-                    }
-                    $jwk = $this->getKeyForHeader($jwks->keys, $header);
+                    $jwk = $this->getKeyForHeader($header);
                 }
 
                 $verified = $this->verifyRSAJWTSignature($hashType,
@@ -1153,8 +1246,12 @@ class OpenIDConnectClient
             case 'HS256':
             case 'HS512':
             case 'HS384':
+                $secret = $this->getClientSecret();
+                if (!is_string($secret) || $secret === '') {
+                    throw new OpenIDConnectClientException('A non-empty client secret is required for HMAC signature verification');
+                }
                 $hashType = 'SHA' . substr($header->alg, 2);
-                $verified = $this->verifyHMACJWTSignature($hashType, $this->getClientSecret(), $payload, $signature);
+                $verified = $this->verifyHMACJWTSignature($hashType, $secret, $payload, $signature);
                 break;
             default:
                 throw new OpenIDConnectClientException('No support for signature type: ' . $header->alg);
@@ -2054,11 +2151,15 @@ class OpenIDConnectClient
     }
 
     /**
+     * Check embedded-JWK permission; subclasses may impose additional validation.
+     *
      * @throws OpenIDConnectClientException
      */
     protected function verifyJWKHeader($jwk)
     {
-        throw new OpenIDConnectClientException('Self signed JWK header is not valid');
+        if (!$this->allowJwkHeader) {
+            throw new OpenIDConnectClientException('Self signed JWK header is not valid');
+        }
     }
 
     /**
